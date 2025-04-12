@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "retain": true,
+      "attention_score": 0.91,
+      "reason": "Highly relevant to cognition goal."
+    },
+    {
+      "retain": false,
+      "attention_score": 0.42,
+      "reason": "Less relevant and redundant."
+    }
+  ]
+}

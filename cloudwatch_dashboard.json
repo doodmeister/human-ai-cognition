@@ -1,0 +1,54 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/Lambda",
+            "Invocations",
+            "FunctionName",
+            "ingest_processor"
+          ],
+          [
+            "AWS/Lambda",
+            "Invocations",
+            "FunctionName",
+            "dream_consolidator"
+          ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "Lambda Invocations"
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/S3",
+            "NumberOfObjects",
+            "BucketName",
+            "humanai-document-store",
+            "StorageType",
+            "AllStorageTypes"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "S3 Bucket Object Count"
+      }
+    }
+  ]
+}

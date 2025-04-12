@@ -1,0 +1,19 @@
+
+graph TD
+    U[User Uploads File] --> S3[S3 Bucket]
+
+    S3 --> LambdaIngest[Lambda: Ingest Processor]
+    LambdaIngest --> STMIndex[OpenSearch STM Index]
+
+    LambdaIngest -->|.txt| Comprehend
+    LambdaIngest -->|.mp3/.wav| Transcribe
+    LambdaIngest -->|.pdf/.png| Textract
+
+    DreamTrigger[EventBridge: Nightly Trigger] --> DreamLambda[Lambda: Dream Consolidator]
+    DreamLambda --> BedrockLLM[Bedrock LLM: Meta-Cognition]
+    BedrockLLM --> LTMIndex[OpenSearch LTM Index]
+
+    STMIndex --> Streamlit
+    LTMIndex --> Streamlit
+    Streamlit --> Dashboard[User Dashboard (Attention + Memory View)]
+    CloudWatch --> Logs[Lambda Logs + Metrics]
