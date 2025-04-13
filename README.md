@@ -1,16 +1,6 @@
-# Human-AI Cognition System
+# Human-AI Cognition
 
-Enhanced modular cognitive architecture simulating human cognition with:
+**Where Memory Meets Meaning**
 
-- **Episodic Memory**: Importance-based selective retention.
-- **Meta-cognition**: Dynamic attention and memory consolidation.
-- **Adaptive Learning**: DPAD trained for relevance prediction.
-
-## Architecture Diagram:
-Updated to reflect new modules and interactions.
-
-## AWS Integration:
-Uses OpenSearch, Bedrock, SageMaker, and Lambda.
-
-## Future Features:
-Emotion modeling and advanced NLP.
+This project simulates coordinated, human-like cognition...
+[content truncated for brevity in preview]
