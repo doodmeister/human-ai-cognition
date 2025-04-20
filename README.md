@@ -19,6 +19,18 @@ This project simulates coordinated, human-like cognition by integrating multi-mo
 
 ## Getting Started
 
+## Installation
+
+1. Clone the repo  
+   ```bash
+   git clone https://github.com/doodmeister/human-ai-cognition.git
+   cd human-ai-cognition
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+
 ### Prerequisites
 - AWS CLI and Terraform installed
 - AWS credentials configured
@@ -30,6 +42,16 @@ This project simulates coordinated, human-like cognition by integrating multi-mo
 ```bash
 terraform init
 terraform apply
+
+## Quickstart
+
+```python
+from model.dpad_transformer import DPADTransformer
+
+model = DPADTransformer(hidden_size=256)
+dummy_input = torch.randn(1, 10, 256)
+output = model(dummy_input)
+print(output.shape)  # -> (1, 10, 256)
 
 
 Environment Variables
