@@ -1,0 +1,6 @@
+# Ignore AWS credentials
+~/.aws/
+.env
+*.pem
+*.key
+*.crt
