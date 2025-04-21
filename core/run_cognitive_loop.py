@@ -1,58 +1,75 @@
 import time
-from metacognition.meta_cognition import MetaCognition
-from memory.short_term_memory import ShortTermMemory  # Adjust if your STM class is named differently
-from utils.sensory_input import get_sensory_input  # You’ll define this next
-from utils.ltm import store_in_ltm  # Optional: placeholder for LTM integration
+from sentence_transformers import SentenceTransformer
 
-# Initialize system modules
+from short_term_memory_opensearch import ShortTermMemoryOpenSearch
+from meta_cognition import MetaCognition
+from dream_state import process_dream_state  # assuming you have this function
+from user_input_simulation import get_next_input  # replace with real input logic
+
+# --- Config ---
+DREAM_INTERVAL = 20  # cycles before triggering dream
+CYCLE_SLEEP = 2      # seconds between cognitive cycles
+VECTOR_DIM = 768
+
+# --- Initialize ---
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+stm = ShortTermMemoryOpenSearch(
+    index_name="humanai-stm",
+    host="localhost",
+    port=9200,
+    vector_dim=VECTOR_DIM
+)
+
 meta = MetaCognition()
-stm = ShortTermMemory()
+cycle_counter = 0
 
-# Simulation loop parameters
-dream_interval = 10  # cycles
-cycle = 0
+print("🧠 Starting cognitive loop...")
 
-def run_loop():
-    global cycle
-    while True:
-        print(f"\n[Cycle {cycle}] ---------------------------")
+while True:
+    # --- Sensory Input ---
+    raw_input = get_next_input()  # This could be user text, file content, etc.
+    if not raw_input:
+        print("💤 No new input... idling.")
+        time.sleep(CYCLE_SLEEP)
+        continue
 
-        # 1. Simulated sensory input
-        input_text = get_sensory_input()
+    # --- Embedding ---
+    embedding = embedding_model.encode(raw_input).tolist()
 
-        # 2. Contextual analysis (simple)
-        context = {
-            "novelty_score": 0.9 if "new" in input_text.lower() else 0.4
-        }
+    # --- Priority / Emotion Estimation (placeholder logic) ---
+    base_priority = 1.0
+    emotion_score = 0.3  # could be dynamically estimated
+    tags = ["dialogue"]
 
-        # 3. Optional priming score from LTM
-        priming_score = 0.6  # Placeholder — you could pull this from LTM similarity
+    # --- Memory Encoding ---
+    stm.add_entry(
+        content=raw_input,
+        embedding=embedding,
+        base_priority=base_priority,
+        emotion=emotion_score,
+        tags=tags
+    )
 
-        # 4. Update attention state
-        meta.update_attention(
-            novelty=context["novelty_score"],
-            task_difficulty=0.5,
-            priming_score=priming_score
-        )
+    print(f"💾 Encoded new input: {raw_input[:60]}...")
 
-        # 5. Check and trigger prospective memory
-        meta.check_prospective_memory()
+    # --- Memory Retrieval ---
+    top_entries = stm.get_top_entries(query_embedding=embedding, k=3)
+    print("🧠 Retrieved similar memories:")
+    for e in top_entries:
+        print(f"   ↪ {e['content'][:60]}... (priority={e['priority']:.2f})")
 
-        # 6. Determine if input is important enough to store
-        if meta.assess_importance(input_text, context):
-            print("[STM] Storing input based on assessed importance.")
-            stm.store(input_text)
-        else:
-            print("[STM] Input not stored (low importance or fatigue).")
+    # --- Meta-Cognition / Fatigue ---
+    fatigue = meta.update(attention_delta=-0.03)
+    print(f"⚙️ Attention Level: {meta.attention:.2f} | Fatigue: {fatigue}")
 
-        # 7. Optional: store to LTM during dream state
-        if cycle > 0 and cycle % dream_interval == 0:
-            print("[MetaCognition] Dream interval reached. Triggering consolidation.")
-            meta.initiate_dream_state()
-            store_in_ltm(stm.flush_high_priority())  # Optional LTM logic
+    # --- Dream Trigger ---
+    cycle_counter += 1
+    if cycle_counter % DREAM_INTERVAL == 0 or fatigue:
+        print("🌙 Entering dream state...")
+        entries = stm.dump_all()
+        process_dream_state(entries)  # your existing consolidation logic
+        stm.prune_low_priority(threshold=0.15)
+        meta.reset_attention()
 
-        cycle += 1
-        time.sleep(2)  # Simulate passage of time
-
-if __name__ == "__main__":
-    run_loop()
+    time.sleep(CYCLE_SLEEP)

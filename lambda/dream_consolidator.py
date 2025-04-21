@@ -1,65 +1,105 @@
-
-import boto3
 import json
-import datetime
+import boto3
 import os
+import uuid
+from datetime import datetime
+from opensearchpy import OpenSearch, RequestsHttpConnection
+from requests_aws4auth import AWS4Auth
+from sklearn.cluster import KMeans
+import numpy as np
 
-# Initialize clients
-s3 = boto3.client('s3')
-opensearch = boto3.client('opensearchserverless')  # Placeholder; should use AWS OpenSearch SDK or signed HTTP for full integration
-bedrock = boto3.client('bedrock-runtime')  # Placeholder for Bedrock LLM invocation
+# Initialize AWS credentials and OpenSearch client
+region = os.environ['AWS_REGION']
+service = 'es'
+credentials = boto3.Session().get_credentials()
+awsauth = AWS4Auth(credentials.access_key,
+                   credentials.secret_key,
+                   region,
+                   service,
+                   session_token=credentials.token)
+
+host = os.environ['OPENSEARCH_HOST']  # e.g., 'search-domain.region.es.amazonaws.com'
+stm_index = os.environ.get('STM_INDEX', 'humanai-stm')
+ltm_index = os.environ.get('LTM_INDEX', 'humanai-ltm')
+vector_dim = int(os.environ.get('VECTOR_DIM', 768))
+
+client = OpenSearch(
+    hosts=[{'host': host, 'port': 443}],
+    http_auth=awsauth,
+    use_ssl=True,
+    verify_certs=True,
+    connection_class=RequestsHttpConnection
+)
 
 def lambda_handler(event, context):
-    print("🌙 Starting Dream State Consolidation...")
+    # Fetch all STM entries
+    stm_entries = fetch_all_stm_entries()
+    if not stm_entries:
+        print("No STM entries found.")
+        return {
+            'statusCode': 200,
+            'body': json.dumps('No STM entries to process.')
+        }
 
-    # === STEP 1: Simulate STM Memory Retrieval ===
-    # In a real implementation, this would query OpenSearch (STM index)
-    stm_memories = [
-        {"text": "User uploaded a document about climate models", "timestamp": "2025-03-24T12:00:00Z"},
-        {"text": "User queried AI safety mechanisms", "timestamp": "2025-03-24T13:00:00Z"},
-        {"text": "Transcribed audio discussing neural feedback loops", "timestamp": "2025-03-24T14:00:00Z"}
-    ]
+    # Extract embeddings and metadata
+    embeddings = np.array([entry['_source']['embedding'] for entry in stm_entries])
+    priorities = np.array([entry['_source'].get('priority', 1.0) for entry in stm_entries])
+    emotions = np.array([entry['_source'].get('emotion', 0.0) for entry in stm_entries])
+    importance = np.array([1.0 if entry['_source'].get('important') else 0.0 for entry in stm_entries])
+    access_counts = np.array([entry['_source'].get('times_accessed', 0) for entry in stm_entries])
 
-    # === STEP 2: Build Prompt for Meta-Cognitive Reflection ===
-    prompt = f"""
-    You are a meta-cognitive reasoning engine responsible for analyzing short-term memory.
+    # Compute salience scores
+    salience = (
+        0.4 * priorities +
+        0.3 * emotions +
+        0.2 * importance +
+        0.1 * np.log1p(access_counts)
+    )
 
-    Your goals:
-    - Reflect on relevance to AI cognition
-    - Simulate attention: assign attention_score (0.0–1.0)
-    - Simulate fatigue: if too many items, lower retention threshold
-    - Recommend which memories to retain in long-term memory
+    # Perform clustering
+    num_clusters = min(5, len(embeddings))
+    kmeans = KMeans(n_clusters=num_clusters, random_state=0)
+    labels = kmeans.fit_predict(embeddings)
 
-    Input Memories:
-    {json.dumps(stm_memories, indent=2)}
+    # Select representative entries from each cluster
+    selected_entries = []
+    for cluster_id in range(num_clusters):
+        cluster_indices = np.where(labels == cluster_id)[0]
+        if len(cluster_indices) == 0:
+            continue
+        cluster_salience = salience[cluster_indices]
+        top_index = cluster_indices[np.argmax(cluster_salience)]
+        selected_entries.append(stm_entries[top_index]['_source'])
 
-    Output Format (JSON list):
-    [
-        {{"retain": true/false, "attention_score": float, "reason": string}},
-        ...
-    ]
-    """
+    # Index selected entries into LTM
+    for entry in selected_entries:
+        index_into_ltm(entry)
 
-    print("🧠 Meta-Cognitive Prompt:\n", prompt)
-
-    # === STEP 3: Simulate Bedrock LLM Response ===
-    # This would normally be a Bedrock call using invoke_model()
-    reflection = {
-        "results": [
-            {"retain": True, "attention_score": 0.92, "reason": "Directly relevant to cognition."},
-            {"retain": False, "attention_score": 0.45, "reason": "Moderately useful but not urgent."},
-            {"retain": True, "attention_score": 0.87, "reason": "Important neural insight."}
-        ]
+    return {
+        'statusCode': 200,
+        'body': json.dumps(f'{len(selected_entries)} entries consolidated into LTM.')
     }
 
-    # === STEP 4: Store Selected Memories in LTM ===
-    for idx, mem in enumerate(stm_memories):
-        result = reflection["results"][idx]
-        if result["retain"]:
-            print(f"📥 Saving to LTM: {mem['text']}")
-            print(f"   Attention Score: {result['attention_score']} | Reason: {result['reason']}")
-            # TODO: Send to OpenSearch LTM index with metadata
-            # This would typically be done using signed HTTP PUT request to OpenSearch index
+def fetch_all_stm_entries():
+    query = {
+        "query": {
+            "match_all": {}
+        },
+        "size": 1000  # Adjust as needed
+    }
+    response = client.search(index=stm_index, body=query)
+    return response['hits']['hits']
 
-    print("✅ Dream state complete.")
-    return {"statusCode": 200, "body": "Dream consolidation complete"}
+def index_into_ltm(entry):
+    doc = {
+        "content": entry['content'],
+        "embedding": entry['embedding'],
+        "timestamp": datetime.utcnow().isoformat(),
+        "priority": entry.get('priority', 1.0),
+        "emotion": entry.get('emotion', 0.0),
+        "tags": entry.get('tags', []),
+        "important": entry.get('important', False),
+        "times_accessed": entry.get('times_accessed', 0)
+    }
+    client.index(index=ltm_index, id=str(uuid.uuid4()), body=doc)
+
