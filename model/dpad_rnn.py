@@ -29,47 +29,48 @@ class DPADRNN(nn.Module):
     ):
         super(DPADRNN, self).__init__()
 
-        # Input transformation
+        # Section 1: Behaviorally-relevant transformation
         self.input_map = make_mlp(input_size, hidden_size, [hidden_size], dropout=dropout) if nonlinear_input else nn.Linear(input_size, hidden_size)
         self.norm = nn.LayerNorm(hidden_size) if use_layernorm else nn.Identity()
 
-        # RNN for behaviorally relevant latent dynamics
         self.rnn_behavior = nn.GRU(hidden_size, hidden_size, batch_first=True) if nonlinear_recurrence else nn.RNN(hidden_size, hidden_size, batch_first=True)
         self.behavior_readout = make_mlp(hidden_size, output_size, dropout=dropout) if nonlinear_behavior_readout else nn.Linear(hidden_size, output_size)
 
-        # RNN for residual modeling
-        self.rnn_recon = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        # Section 2: Residual dynamics
+        self.rnn_residual = nn.GRU(hidden_size, hidden_size, batch_first=True)
         self.reconstruction_head = make_mlp(hidden_size, input_size, dropout=dropout) if nonlinear_reconstruction else nn.Linear(hidden_size, input_size)
 
     def forward(self, x, debug=False):
         """
         Args:
-            x: (batch_size, seq_len, input_size) or (seq_len, input_size)
+            x: Tensor of shape (batch_size, seq_len, input_size)
         Returns:
-            dict with 'behavior', 'reconstruction', 'latents'
+            dict with:
+                - 'behavior': shape (batch_size, seq_len)
+                - 'reconstruction': shape (batch_size, seq_len, input_size)
+                - 'latents': intermediate hidden states from RNN 1
         """
         if x.dim() == 2:
-            x = x.unsqueeze(0)
+            x = x.unsqueeze(0)  # (1, seq_len, input_size)
 
-        # Input mapping + normalization
         x_mapped = self.norm(self.input_map(x))
         if debug:
-            print("[DPAD] x_mapped:", x_mapped.shape)
+            print("[DPAD] Mapped input shape:", x_mapped.shape)
 
-        # Behavior-predictive RNN
-        behavior_out, _ = self.rnn_behavior(x_mapped)
-        behavior_pred = self.behavior_readout(behavior_out).squeeze(-1)
+        # Section 1: Behaviorally relevant dynamics
+        h_behavior, _ = self.rnn_behavior(x_mapped)
+        behavior_pred = self.behavior_readout(h_behavior).squeeze(-1)
         if debug:
-            print("[DPAD] behavior_pred:", behavior_pred.shape)
+            print("[DPAD] Behavior output shape:", behavior_pred.shape)
 
-        # Residual dynamics RNN
-        recon_out, _ = self.rnn_recon(x_mapped)
-        recon_pred = self.reconstruction_head(recon_out)
+        # Section 2: Residual dynamics for input reconstruction
+        h_residual, _ = self.rnn_residual(x_mapped)
+        recon_pred = self.reconstruction_head(h_residual)
         if debug:
-            print("[DPAD] recon_pred:", recon_pred.shape)
+            print("[DPAD] Recon output shape:", recon_pred.shape)
 
         return {
             "behavior": behavior_pred,
             "reconstruction": recon_pred,
-            "latents": behavior_out
+            "latents": h_behavior
         }
