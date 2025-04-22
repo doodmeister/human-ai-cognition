@@ -26,10 +26,12 @@ This project simulates coordinated, human-like cognition by integrating multi-mo
    git clone https://github.com/doodmeister/human-ai-cognition.git
    cd human-ai-cognition
 
+2. Setup the environment
+```
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
+```
 
 ### Prerequisites
 - AWS CLI and Terraform installed

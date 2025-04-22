@@ -3,39 +3,6 @@ provider "aws" {
 }
 
 # -----------------------------
-# VARIABLES
-# -----------------------------
-variable "aws_region" {
-  default = "us-east-1"
-}
-
-variable "s3_bucket_name" {
-  default = "cognition-inputs"
-}
-
-variable "nasa_api_key" {
-  description = "NASA API key for vision service"
-  type        = string
-  sensitive   = true
-}
-
-variable "opensearch_domain" {
-  default = "humanai-cluster"
-}
-
-variable "vector_dim" {
-  default = 768
-}
-
-variable "lambda_memory_size" {
-  default = 512
-}
-
-variable "lambda_timeout" {
-  default = 60
-}
-
-# -----------------------------
 # S3 BUCKET
 # -----------------------------
 resource "aws_s3_bucket" "input_bucket" {
