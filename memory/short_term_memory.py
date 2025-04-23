@@ -1,96 +1,86 @@
-import uuid
-from datetime import datetime
-from typing import List, Optional
+# memory/short_term_memory.py
 
-from opensearchpy import OpenSearch
+from collections import deque
+import time
 
-class ShortTermMemoryOpenSearch:
-    def __init__(self, index_name="humanai-stm", host="localhost", port=9200, vector_dim=768):
-        self.client = OpenSearch(
-            hosts=[{"host": host, "port": port}],
-            http_compress=True
-        )
-        self.index_name = index_name
-        self.vector_dim = vector_dim
-        self._ensure_index()
+class STMItem:
+    """Container for an item in Short-Term Memory.
+    
+    Attributes:
+        content: The raw data of the memory (e.g., text snippet, sensor reading).
+        timestamp: The time when the memory was added (seconds since epoch).
+        importance: A floating-point score representing attention/importance.
+        prev_id: Link to the previous STM item ID for context chaining (if any).
+    """
+    def __init__(self, content, importance=1.0, prev_id=None):
+        self.content = content
+        self.timestamp = time.time()
+        self.importance = importance  # initial attention level
+        self.prev_id = prev_id  # link to previous event in sequence
 
-    def _ensure_index(self):
-        if not self.client.indices.exists(index=self.index_name):
-            self.client.indices.create(
-                index=self.index_name,
-                body={
-                    "settings": {
-                        "index": {
-                            "knn": True
-                        }
-                    },
-                    "mappings": {
-                        "properties": {
-                            "content": {"type": "text"},
-                            "embedding": {"type": "knn_vector", "dimension": self.vector_dim},
-                            "timestamp": {"type": "date"},
-                            "priority": {"type": "float"},
-                            "emotion": {"type": "float"},
-                            "tags": {"type": "keyword"},
-                            "important": {"type": "boolean"},
-                            "times_accessed": {"type": "integer"}
-                        }
-                    }
-                }
-            )
-
-    def add_entry(self, content: str, embedding: List[float], base_priority: float = 1.0,
-                  important: bool = False, emotion: float = 0.0, tags: Optional[List[str]] = None):
-        doc = {
-            "content": content,
-            "embedding": embedding,
-            "timestamp": datetime.utcnow(),
-            "priority": base_priority,
-            "important": important,
-            "emotion": emotion,
-            "tags": tags or [],
-            "times_accessed": 0
-        }
-        self.client.index(index=self.index_name, id=str(uuid.uuid4()), body=doc)
-
-    def get_top_entries(self, query_embedding: List[float], k: int = 5):
-        """Retrieves top-k most similar entries based on vector similarity and boosts priority by access."""
-        res = self.client.search(index=self.index_name, body={
-            "size": k,
-            "query": {
-                "knn": {
-                    "embedding": {
-                        "vector": query_embedding,
-                        "k": k
-                    }
-                }
-            }
-        })
-        results = []
-        for hit in res["hits"]["hits"]:
-            doc_id = hit["_id"]
-            source = hit["_source"]
-            source["times_accessed"] += 1
-            self.client.update(index=self.index_name, id=doc_id, body={
-                "doc": {"times_accessed": source["times_accessed"]}
-            })
-            results.append(source)
-        return results
-
-    def prune_low_priority(self, threshold: float = 0.1):
-        """Deletes entries with priority below the threshold."""
-        self.client.delete_by_query(index=self.index_name, body={
-            "query": {
-                "range": {
-                    "priority": {"lt": threshold}
-                }
-            }
-        })
-
-    def dump_all(self) -> List[dict]:
-        """Returns all entries in the STM index (for debugging or transfer)."""
-        results = []
-        res = self.client.search(index=self.index_name, body={"query": {"match_all": {}}}, size=1000)
-        for hit in res["hits"]["hits"]:
-            results.append(hit["_source"])
-        return results
+class ShortTermMemory:
+    """Short-Term Memory buffer for recent experiences (working memory).
+    
+    Simulates human working memory with limited capacity and decaying activation.
+    New items can be added, while older items decay and are removed over time.
+    Supports context chaining: related sequential items are linked.
+    """
+    def __init__(self, capacity=50, decay_half_life=30.0):
+        """
+        Args:
+            capacity (int): Max number of items to hold at once.
+            decay_half_life (float): Half-life in seconds for the importance decay.
+        """
+        self.capacity = capacity
+        self.decay_half_life = decay_half_life
+        self.items = deque()  # store STMItem objects
+        self.last_item_id = 0  # simple counter for item IDs
+        self.last_added_id = None  # track the most recently added item's ID
+    
+    def add(self, content, importance=1.0):
+        """Add a new memory to STM, possibly evicting oldest if capacity exceeded.
+        
+        If a previous item exists, link this new item to it (context chaining).
+        """
+        # Decay existing items before adding new one
+        self._apply_decay()
+        # Create new item with link to previous
+        new_item = STMItem(content, importance, prev_id=self.last_added_id)
+        self.last_item_id += 1
+        new_item.id = self.last_item_id
+        # Add to STM
+        self.items.append(new_item)
+        self.last_added_id = new_item.id
+        # Enforce capacity
+        if len(self.items) > self.capacity:
+            self.items.popleft()  # remove oldest item
+        return new_item.id
+    
+    def get_recent_items(self, n=5):
+        """Retrieve the N most recent items (after applying decay to update importances).
+        
+        Returns:
+            List of (content, importance) for up to N latest items, sorted from newest to oldest.
+        """
+        self._apply_decay()
+        recent = list(self.items)[-n:]  # take last n items
+        # Sort by insertion order (newest last in deque, so already in order newest->oldest)
+        recent_sorted = sorted(recent, key=lambda x: x.timestamp, reverse=True)
+        return [(item.content, item.importance) for item in recent_sorted]
+    
+    def _apply_decay(self):
+        """Internal: apply exponential decay to importance of all items based on time elapsed."""
+        current_time = time.time()
+        for item in list(self.items):
+            # compute time since item added
+            age = current_time - item.timestamp
+            # exponential decay: importance decays by half every decay_half_life seconds
+            decay_factor = 0.5 ** (age / self.decay_half_life)
+            item.importance *= decay_factor
+            # If importance falls very low, consider removing the item (forgetting)
+            if item.importance < 0.01:
+                # Remove item from deque if it's at either end
+                try:
+                    self.items.remove(item)
+                except ValueError:
+                    pass  # item might have already been removed if capacity trimming
