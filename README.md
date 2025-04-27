@@ -1,91 +1,159 @@
 # Human-AI Cognition
 
-**Where Memory Meets Meaning**
+> **Where Memory Meets Meaning**  
+> A modular framework for building a human-like AI system with memory, reasoning, and meta-cognitive abilities.
 
-This project simulates coordinated, human-like cognition by integrating multi-modal sensory ingestion, adaptive attention mechanisms, and memory filtering inspired by human short- and long-term memory systems.
+---
 
-## Features
-- Real-time ingestion of video, audio, text, and sensor data from public APIs
-- Short-Term Memory module with decaying relevance
-- Meta-cognitive layer that monitors fatigue, novelty, and attention levels
-- Factorized self-attention mechanism for efficient multi-modal event prioritization
-- DPAD transformer model that learns what should be remembered
-- Long-Term Memory consolidation via AWS OpenSearch (or simulated reflection)
-- Fully deployable on AWS using Terraform
+## 🧠 Overview
 
-## Architecture
-[video/api] --> [video_stream.py] --+ [audio/api] --> [audio_stream.py] --+--> [ingest_processor] --> [STM] [text/api] --> [text_stream.py] --+ [sensor/api]-> [sensor_stream.py] --+ | [MetaCognition] | [DPAD Transformer] | [Dream Consolidator] | [OpenSearch (LTM)]
+Human-AI Cognition is an open-source project to create a cognitive architecture that simulates aspects of human memory, attention, and thought.  
+The system leverages **Short-Term Memory (STM)**, **Long-Term Memory (LTM)**, **Prospective Memory**, and Retrieval-Augmented Generation (**RAG**) to interact with a Large Language Model (Claude via AWS Bedrock).
 
+The agent retrieves memories, builds context-rich prompts, and responds with reasoning augmented by its evolving memory.
 
-## Getting Started
+---
 
-## Installation
+## 📂 Project Structure
 
-1. Clone the repo  
-   ```bash
-   git clone https://github.com/doodmeister/human-ai-cognition.git
-   cd human-ai-cognition
-
-2. Setup the environment
 ```
-python3 -m venv .venv
-source .venv/bin/activate
+human-ai-cognition/
+├── cognition/
+│   ├── cognitive_agent.py         # Main agent orchestration
+│   ├── rag_utils.py                # Prompt building utilities (RAG)
+├── memory/
+│   ├── short_term_memory.py        # Short-term memory (STM)
+│   ├── long_term_memory.py         # Long-term memory (LTM - semantic focus)
+│   ├── prospective_memory.py       # Scheduled future tasks (reminders)
+│   ├── semantic_memory.py          # Semantic memory retrieval
+│   ├── episodic_memory.py          # Episodic memory placeholder
+├── model/
+│   ├── dpad_transformer.py         # Dynamic Predictive Attention Transformer (WIP)
+├── main.py                         # 🚀 Main launcher (new)
+├── terraform/                      # (optional) AWS deployment infrastructure
+├── README.md                       # (this file)
+└── requirements.txt                # Python dependencies
+```
+
+---
+
+## 🚀 Quickstart Guide
+
+### 1. Install Dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Prerequisites
-- AWS CLI and Terraform installed
-- AWS credentials configured
-- API keys for:
-  - [NASA API](https://api.nasa.gov/)
-  - [NewsAPI](https://newsapi.org/)
+You'll need:
+- `boto3`
+- `sentence-transformers`
+- `torch`
+- Any additional AWS authentication libraries if using Bedrock.
 
-### Deployment Steps
+---
+
+### 2. Set Environment Variables
+
+You must have AWS credentials configured (`aws configure`) and access to:
+- **AWS Bedrock Runtime** (Claude 3 model)
+- (Optional) **S3** and **OpenSearch** if using memory consolidation features.
+
+Set your environment variables (example):
+
 ```bash
-terraform init
-terraform apply
+export AWS_REGION=us-east-1
+export S3_BUCKET=cognition-inputs
+export BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0
+```
 
-## Quickstart
+---
 
-```python
-from model.dpad_transformer import DPADTransformer
+### 3. Run the Cognitive Agent
 
-model = DPADTransformer(hidden_size=256)
-dummy_input = torch.randn(1, 10, 256)
-output = model(dummy_input)
-print(output.shape)  # -> (1, 10, 256)
+```bash
+python main.py
+```
 
+You should see:
 
-Environment Variables
-Set the following environment variables in your AWS Lambda console or local .env:
+```
+🤖 Welcome to Human-AI Cognition Chatbot
+Type 'exit' or 'quit' to end the conversation.
+============================================================
+You: 
+```
 
-S3_BUCKET
+Then you can start chatting!
 
-NASA_API_KEY
+The agent will:
+- Retrieve memories from STM, LTM, and Reminders
+- Build a prompt
+- Send it to Claude on AWS Bedrock
+- Save your conversation to STM for future use
 
-NEWS_API_KEY
+---
 
-Modules
-lambda/video_stream.py: NASA video feed -> S3
+## 🧠 How the Cognitive Loop Works
 
-lambda/audio_stream.py: LibriVox audio -> Transcribe -> S3
+1. **User input** → embedded into a vector
+2. **STM and LTM** → queried for relevant memories
+3. **Reminders** → checked
+4. **Prompt** → dynamically built (RAG style)
+5. **Claude LLM** → invoked via AWS Bedrock
+6. **Reply** → printed + conversation stored into STM
+7. **Memory decay** → simulated over time
 
-lambda/text_stream.py: News headlines -> S3
+---
 
-lambda/sensor_stream.py: Weather data -> S3
+## 🛠 Key Improvements Over Earlier Versions
 
-model/dpad_transformer.py: Multi-modal attention + LSTM classifier
+- 📚 **Short-Term Memory** now supports `query()` and `insert()`
+- 📚 **Long-Term Memory** combines semantic memory retrieval
+- 🧹 **Prompt Building** now safely handles dicts or strings
+- 🚀 **Bedrock Integration** uses `invoke_model()` properly (no `.converse()`)
+- 🧠 **Embedder Class** optimizes memory vector embedding
+- 🔥 **CognitiveAgent** orchestrates everything cleanly
+- 🧹 **Main CLI (`main.py`)** provides robust user interaction
+- 📄 **Improved Documentation** (this README!)
 
-memory/: Memory storage and decay management
+---
 
-metacognition/: Tracks cognitive attention and fatigue
+## 📅 Future Enhancements (Roadmap)
 
-Documentation
-docs/design.md: Architecture and attention design
+- Dream-state consolidation of STM to LTM
+- Fatigue, attention, and emotional state modeling
+- Episodic + semantic memory blending
+- Memory decay models based on time + relevance
+- Context prioritization (importance scoring)
+- Real-time sensory input buffering
+- OpenSearch vector database for LTM (optional upgrade)
+- Full web-based interactive UI (Phase 2)
 
-docs/api_usage.md: How each API works and is integrated
+---
 
-docs/architecture.png: System overview diagram
+## 🤝 Contributing
 
-License
-MIT
+Contributions are welcome!  
+Planned areas:
+- Improving memory querying (semantic search)
+- Better meta-cognition feedback loops
+- Dream-state consolidation improvements
+- More biologically-plausible memory decay models
+
+---
+
+## 📜 License
+
+[MIT License](LICENSE)
+
+---
+
+## ✨ Credits
+
+- Built with passion for human cognition, AI architecture, and open-source spirit.
+- Thanks to AWS Bedrock, SentenceTransformers, and all contributors pushing the boundary of cognitive AI.
+
+---
+
+> "Memory isn't just storage. It's meaning. It's life." 🧠
