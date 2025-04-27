@@ -14,7 +14,24 @@ Accounts for all current architecture improvements:
 - Error handling
 """
 
+import logging
 from cognition.cognitive_agent import CognitiveAgent
+import signal
+import sys
+
+# Configure logging
+logging.basicConfig(
+    filename="cognition_chatbot.log",
+    level=logging.ERROR,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# Graceful shutdown handler
+def signal_handler(sig, frame):
+    print("\n👋 Exiting gracefully. Goodbye!")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 def main():
     print("=" * 60)
@@ -26,7 +43,10 @@ def main():
 
     while True:
         try:
+            # Timeout for user input (optional, set to None for no timeout)
+            signal.alarm(120)  # 120 seconds timeout
             user_input = input("\nYou: ").strip()
+            signal.alarm(0)  # Disable alarm after input
 
             # Exit command
             if user_input.lower() in {"exit", "quit"}:
@@ -42,8 +62,12 @@ def main():
             reply = agent.run_chat(user_input)
             print(f"\nAssistant: {reply}")
 
+        except KeyboardInterrupt:
+            print("\n👋 Exiting gracefully. Goodbye!")
+            break
         except Exception as e:
-            print(f"\n🚨 An error occurred: {str(e)}")
+            logging.error(f"An error occurred: {str(e)}", exc_info=True)
+            print(f"\n🚨 An unexpected error occurred. Please try again.")
             continue
 
 if __name__ == "__main__":
