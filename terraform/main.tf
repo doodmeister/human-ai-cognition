@@ -17,13 +17,15 @@ resource "aws_iam_role" "lambda_exec_role" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = {
-        Service = "lambda.amazonaws.com"
+    Statement = [
+      {
+        Action    = "sts:AssumeRole",
+        Effect    = "Allow",
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
       }
-    }]
+    ]
   })
 }
 
@@ -55,6 +57,14 @@ resource "aws_iam_role_policy" "lambda_inline_policy" {
       {
         Effect = "Allow",
         Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
@@ -66,7 +76,7 @@ resource "aws_iam_role_policy" "lambda_inline_policy" {
 }
 
 # -----------------------------
-# LAMBDAS
+# EXISTING LAMBDA FUNCTIONS
 # -----------------------------
 resource "aws_lambda_function" "video_stream" {
   function_name = "video_stream_lambda"
@@ -116,6 +126,9 @@ resource "aws_lambda_function" "text_stream" {
       OPENSEARCH_HOST = var.opensearch_domain
       STM_INDEX       = "humanai-stm"
       VECTOR_DIM      = tostring(var.vector_dim)
+      AWS_REGION      = var.aws_region
+      CLAUDE_MODEL_ID = var.claude_model_id
+      EMBEDDER_MODEL  = var.embedder_model
     }
   }
 }
@@ -140,7 +153,33 @@ resource "aws_lambda_function" "dream_consolidator" {
 }
 
 # -----------------------------
-# CLOUDWATCH SCHEDULED RULES
+# NEW LAMBDA FUNCTION - Cognitive Agent
+# -----------------------------
+resource "aws_lambda_function" "cognitive_agent" {
+  function_name = "cognitive_agent_lambda"
+  role          = aws_iam_role.lambda_exec_role.arn
+  handler       = "main.lambda_handler"
+  runtime       = "python3.9"
+  filename      = "./build/cognitive_agent.zip"
+  source_code_hash = filebase64sha256("./build/cognitive_agent.zip")
+  timeout       = 180
+  memory_size   = 1024
+  environment {
+    variables = {
+      S3_BUCKET       = var.s3_bucket_name
+      OPENSEARCH_HOST = var.opensearch_domain
+      STM_INDEX       = "humanai-stm"
+      LTM_INDEX       = "humanai-ltm"
+      VECTOR_DIM      = tostring(var.vector_dim)
+      AWS_REGION      = var.aws_region
+      CLAUDE_MODEL_ID = var.claude_model_id
+      EMBEDDER_MODEL  = var.embedder_model
+    }
+  }
+}
+
+# -----------------------------
+# CLOUDWATCH RULES
 # -----------------------------
 resource "aws_cloudwatch_event_rule" "video_schedule" {
   name                = "video_stream_schedule"
@@ -179,7 +218,7 @@ resource "aws_cloudwatch_event_target" "dream_trigger" {
 }
 
 # -----------------------------
-# LAMBDA INVOCATION PERMISSIONS
+# LAMBDA PERMISSIONS
 # -----------------------------
 resource "aws_lambda_permission" "video_perm" {
   statement_id  = "AllowCloudWatchVideo"
