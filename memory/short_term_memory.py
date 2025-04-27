@@ -1,86 +1,83 @@
 # memory/short_term_memory.py
 
-from collections import deque
-import time
+"""
+Short Term Memory (STM) module.
 
-class STMItem:
-    """Container for an item in Short-Term Memory.
-    
-    Attributes:
-        content: The raw data of the memory (e.g., text snippet, sensor reading).
-        timestamp: The time when the memory was added (seconds since epoch).
-        importance: A floating-point score representing attention/importance.
-        prev_id: Link to the previous STM item ID for context chaining (if any).
-    """
-    def __init__(self, content, importance=1.0, prev_id=None):
-        self.content = content
-        self.timestamp = time.time()
-        self.importance = importance  # initial attention level
-        self.prev_id = prev_id  # link to previous event in sequence
+Handles storing and retrieving recent memory entries for fast, temporary access.
+Incorporates basic decay over time to simulate forgetting.
+"""
+
+from datetime import datetime, timedelta
 
 class ShortTermMemory:
-    """Short-Term Memory buffer for recent experiences (working memory).
-    
-    Simulates human working memory with limited capacity and decaying activation.
-    New items can be added, while older items decay and are removed over time.
-    Supports context chaining: related sequential items are linked.
-    """
-    def __init__(self, capacity=50, decay_half_life=30.0):
+    def __init__(self, max_items=100, decay_minutes=60):
         """
+        Initialize the short-term memory.
+
         Args:
-            capacity (int): Max number of items to hold at once.
-            decay_half_life (float): Half-life in seconds for the importance decay.
+            max_items (int): Maximum number of items to retain.
+            decay_minutes (int): Time after which items are considered 'forgotten'.
         """
-        self.capacity = capacity
-        self.decay_half_life = decay_half_life
-        self.items = deque()  # store STMItem objects
-        self.last_item_id = 0  # simple counter for item IDs
-        self.last_added_id = None  # track the most recently added item's ID
-    
-    def add(self, content, importance=1.0):
-        """Add a new memory to STM, possibly evicting oldest if capacity exceeded.
-        
-        If a previous item exists, link this new item to it (context chaining).
+        self.max_items = max_items
+        self.decay_minutes = decay_minutes
+        self.memory = []  # List of (timestamp, text) tuples
+
+    def add(self, content: str):
         """
-        # Decay existing items before adding new one
-        self._apply_decay()
-        # Create new item with link to previous
-        new_item = STMItem(content, importance, prev_id=self.last_added_id)
-        self.last_item_id += 1
-        new_item.id = self.last_item_id
-        # Add to STM
-        self.items.append(new_item)
-        self.last_added_id = new_item.id
-        # Enforce capacity
-        if len(self.items) > self.capacity:
-            self.items.popleft()  # remove oldest item
-        return new_item.id
-    
-    def get_recent_items(self, n=5):
-        """Retrieve the N most recent items (after applying decay to update importances).
-        
+        Add a new memory item.
+
+        Args:
+            content (str): The memory text to store.
+        """
+        timestamp = datetime.utcnow()
+        self.memory.append((timestamp, content))
+
+        # Keep only the most recent N items
+        if len(self.memory) > self.max_items:
+            self.memory = self.memory[-self.max_items:]
+
+    def insert(self, memory: list, metadata: dict = None):
+        """
+        Insert a new memory from an embedded source (for compatibility).
+
+        Args:
+            memory (list): Vector representation (ignored here, we store text).
+            metadata (dict): Metadata containing at least a 'text' field.
+        """
+        text = metadata.get("text") if metadata else str(memory)
+        self.add(text)
+
+    def query(self, query_vector: list, top_k: int = 5) -> list:
+        """
+        Query short-term memory for recent relevant items.
+
+        Args:
+            query_vector (list): Unused here (no real vector similarity yet).
+            top_k (int): Number of top results to return.
+
         Returns:
-            List of (content, importance) for up to N latest items, sorted from newest to oldest.
+            List[dict]: List of recent memory entries with 'text' field.
         """
+        # Apply decay before returning
         self._apply_decay()
-        recent = list(self.items)[-n:]  # take last n items
-        # Sort by insertion order (newest last in deque, so already in order newest->oldest)
-        recent_sorted = sorted(recent, key=lambda x: x.timestamp, reverse=True)
-        return [(item.content, item.importance) for item in recent_sorted]
-    
+
+        # Return the most recent top_k memories in {"text": ...} format
+        recent = self.memory[-top_k:]
+        return [{"text": content} for (timestamp, content) in recent]
+
     def _apply_decay(self):
-        """Internal: apply exponential decay to importance of all items based on time elapsed."""
-        current_time = time.time()
-        for item in list(self.items):
-            # compute time since item added
-            age = current_time - item.timestamp
-            # exponential decay: importance decays by half every decay_half_life seconds
-            decay_factor = 0.5 ** (age / self.decay_half_life)
-            item.importance *= decay_factor
-            # If importance falls very low, consider removing the item (forgetting)
-            if item.importance < 0.01:
-                # Remove item from deque if it's at either end
-                try:
-                    self.items.remove(item)
-                except ValueError:
-                    pass  # item might have already been removed if capacity trimming
+        """Forget memories older than decay_minutes."""
+        cutoff = datetime.utcnow() - timedelta(minutes=self.decay_minutes)
+        self.memory = [(ts, text) for (ts, text) in self.memory if ts >= cutoff]
+
+    def get_recent_items(self, count: int = 5) -> list:
+        """
+        Get the most recent memory items (no decay check).
+
+        Args:
+            count (int): Number of items to retrieve.
+
+        Returns:
+            List[str]: List of recent memory texts.
+        """
+        return [content for (_, content) in self.memory[-count:]]
