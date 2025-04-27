@@ -68,3 +68,16 @@ variable "embedder_model" {
   type        = string
   default     = "all-MiniLM-L6-v2"
 }
+
+# New Variables
+variable "training_schedule_expression" {
+  description = "Schedule expression for triggering DPADRNN training (default: every 12 hours)"
+  type        = string
+  default     = "rate(12 hours)"
+}
+
+variable "log_retention_in_days" {
+  description = "Number of days to retain logs in CloudWatch"
+  type        = number
+  default     = 14
+}
