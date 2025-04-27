@@ -1,22 +1,82 @@
-def embed_text(text: str) -> list[float]:
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    return model.encode(text).tolist()
+# cognition/rag_utils.py
 
-def build_prompt(user_input, stm_results, ltm_results, reminders, max_tokens=512):
-    def format_section(title, docs):
-        return f"### {title}\n" + "\n".join(d.get("text", "") for d in docs[:3]) + "\n"
+"""
+Retrieval-Augmented Generation (RAG) utilities.
 
-    stm_section = format_section("Recent Short-Term Memory", stm_results)
-    ltm_section = format_section("Relevant Long-Term Knowledge", ltm_results)
-    reminder_section = format_section("Upcoming Tasks", [{"text": r} for r in reminders])
+Handles building prompts that combine user inputs with retrieved memories
+(short-term, long-term, and prospective) to create context-rich inputs for the LLM.
+"""
 
-    context = f"{stm_section}\n{ltm_section}\n{reminder_section}"
-    prompt = f"""{context}
-You are a reflective and memory-aware assistant.
-Answer the user's query using the information above, reasoning like a human.
+from typing import List, Union, Dict
 
-User: {user_input}
-Assistant:"""
+def embed_text(text: str, embedder) -> list:
+    """
+    Embed a piece of text using the provided embedder.
 
-    return prompt
+    Args:
+        text (str): Text to embed.
+        embedder: SentenceTransformer or similar embedder instance.
+
+    Returns:
+        list: Embedding vector.
+    """
+    return embedder.embed(text)
+
+def format_section(title: str, docs: List[Union[str, Dict[str, str]]]) -> str:
+    """
+    Format a memory section for the final prompt.
+
+    Args:
+        title (str): Section title (e.g., "Short Term Memory").
+        docs (List): List of documents, either strings or dicts with a 'text' field.
+
+    Returns:
+        str: Formatted section text.
+    """
+    if not docs:
+        return ""
+
+    lines = []
+    for d in docs[:3]:  # Limit to top 3 items per section
+        if isinstance(d, dict):
+            lines.append(d.get("text", ""))
+        else:
+            lines.append(str(d))
+    
+    section_text = f"### {title}\n" + "\n".join(lines) + "\n"
+    return section_text
+
+def build_prompt(user_input: str,
+                 stm_hits: List[Union[str, Dict[str, str]]],
+                 ltm_hits: List[Union[str, Dict[str, str]]],
+                 reminders: List[Union[str, Dict[str, str]]]) -> str:
+    """
+    Build the complete prompt to send to the LLM.
+
+    Args:
+        user_input (str): The user's raw input query.
+        stm_hits (list): Retrieved Short-Term Memory results.
+        ltm_hits (list): Retrieved Long-Term Memory results.
+        reminders (list): Retrieved Prospective Memory results.
+
+    Returns:
+        str: Complete prompt ready for LLM input.
+    """
+    prompt_parts = []
+
+    # System behavior instruction
+    prompt_parts.append("You are a helpful AI assistant with a structured memory system.")
+    prompt_parts.append("You can recall memories, reminders, and past conversations to assist the user.\n")
+
+    # Add memory sections
+    prompt_parts.append(format_section("Short Term Memory", stm_hits))
+    prompt_parts.append(format_section("Long Term Memory", ltm_hits))
+    prompt_parts.append(format_section("Reminders", reminders))
+
+    # Current user input
+    prompt_parts.append(f"### Current Conversation\nUser: {user_input}\nAssistant:")
+
+    # Combine everything cleanly
+    full_prompt = "\n".join(part for part in prompt_parts if part)
+
+    return full_prompt
