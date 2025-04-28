@@ -1,33 +1,85 @@
-import json
+"""
+Video Stream Processing Lambda
+
+This Lambda downloads a video from S3, validates it, streams frames
+through a CNN in batches, and uploads the JSON results back to S3.
+
+Author: doodmeister
+Date: 2025-04-28
+"""
+
 import os
+import json
 import tempfile
+import logging
+import time
+from datetime import datetime, timezone
+from functools import wraps
+from typing import List, Dict, Any
+
 import boto3
 import torch
 import torchvision.transforms as T
 import cv2
 import numpy as np
-import time
-import logging
-from typing import List, Dict, Any
+from botocore.exceptions import ClientError
 
-# Add near top of file
-import os
+# --- Helpers ---
+def get_env_var(name: str, default: Any = None, required: bool = False) -> Any:
+    val = os.getenv(name, default)
+    if required and val is None:
+        raise EnvironmentError(f"Missing required environment variable: {name}")
+    return val
 
-# Configuration
-S3_BUCKET = os.environ['S3_BUCKET']
-MODEL_PATH = os.environ.get('MODEL_PATH', '/opt/models/cnn_video.pt')
-FRAME_RATE = int(os.environ.get('FRAME_RATE', '1'))
-SUPPORTED_FORMATS = ('.mp4', '.avi', '.mov')
+def retry(exceptions, tries=3, delay=1, backoff=2):
+    """Simple retry decorator with exponential backoff."""
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            mtries, mdelay = tries, delay
+            while mtries > 1:
+                try:
+                    return f(*args, **kwargs)
+                except exceptions as e:
+                    logger.warning(
+                        "Retry %s due to %s, sleeping %s s",
+                        f.__name__, e, mdelay
+                    )
+                    time.sleep(mdelay)
+                    mtries -= 1
+                    mdelay *= backoff
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
 
+# --- Logging ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Configuration ---
+S3_BUCKET          = get_env_var("S3_BUCKET", required=True)
+MODEL_PATH         = get_env_var("MODEL_PATH", "/opt/models/cnn_video.pt")
+FRAME_RATE         = int(get_env_var("FRAME_RATE", "1"))        # frames per second
+MAX_VIDEO_SIZE_MB  = float(get_env_var("MAX_VIDEO_SIZE_MB", "500"))
+BATCH_SIZE         = int(get_env_var("BATCH_SIZE", "8"))
+SUPPORTED_FORMATS  = tuple(get_env_var("SUPPORTED_FORMATS", ".mp4,.avi,.mov").split(","))
+
+# --- AWS Clients ---
 s3 = boto3.client("s3")
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+# --- Retry-Wrapped S3 Operations ---
+@retry((ClientError,), tries=3, delay=1)
+def download_from_s3(bucket: str, key: str, local_path: str):
+    return s3.download_file(bucket, key, local_path)
 
-# Define a simple CNN (must match the one saved to MODEL_PATH)
+@retry((ClientError,), tries=3, delay=1)
+def upload_to_s3(bucket: str, key: str, body: bytes, content_type: str):
+    return s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType=content_type)
+
+# --- Model Definition & Loading ---
 class SimpleCNN(torch.nn.Module):
     def __init__(self):
-        super(SimpleCNN, self).__init__()
+        super().__init__()
         self.net = torch.nn.Sequential(
             torch.nn.Conv2d(3, 16, kernel_size=3, stride=2),
             torch.nn.ReLU(),
@@ -35,173 +87,138 @@ class SimpleCNN(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.AdaptiveAvgPool2d((1, 1)),
             torch.nn.Flatten(),
-            torch.nn.Linear(32, 2)  # Example: binary classification (e.g., object present or not)
+            torch.nn.Linear(32, 2)
         )
 
     def forward(self, x):
         return self.net(x)
 
-def load_model(model_path):
-    """Safe model loading with error handling."""
-    try:
-        model = SimpleCNN()
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        
-        model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
-        model.eval()
-        return model
-    except Exception as e:
-        raise RuntimeError(f"Failed to load model: {str(e)}")
+def load_model(path: str) -> torch.nn.Module:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Model file not found: {path}")
+    model = SimpleCNN()
+    state = torch.load(path, map_location="cpu")
+    model.load_state_dict(state)
+    model.eval()
+    return model
 
-# Initialize model (once per cold start)
-model = load_model(MODEL_PATH)
+try:
+    model = load_model(MODEL_PATH)
+    logger.info("Model loaded from %s", MODEL_PATH)
+except Exception as e:
+    logger.error("Failed to load model: %s", e)
+    raise
 
+# --- Transform Pipeline ---
 transform = T.Compose([
     T.ToPILImage(),
     T.Resize((128, 128)),
-    T.ToTensor()
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225])
 ])
 
-
-def validate_video_file(video_path):
-    """Validate video file before processing."""
-    if not os.path.exists(video_path):
-        raise FileNotFoundError(f"Video file not found: {video_path}")
-    
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        cap.release()
-        raise ValueError(f"Unable to open video file: {video_path}")
-    
-    # Get basic video properties
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-    
-    return {'fps': fps, 'frame_count': frame_count}
-
-
-def check_video_size(video_path: str, max_size_mb: int = 500) -> None:
-    """Verify video file size is within Lambda limits."""
-    file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
-    if file_size_mb > max_size_mb:
-        raise ValueError(f"Video file too large: {file_size_mb:.1f}MB (max {max_size_mb}MB)")
-
-
-def extract_frames(video_path: str, frame_rate: int = 1) -> List[np.ndarray]:
-    """
-    Extract frames from video at specified frame rate.
-    
-    Args:
-        video_path: Path to video file
-        frame_rate: Number of frames to extract per second
-        
-    Returns:
-        List of numpy arrays containing frame data
-    """
-    vidcap = cv2.VideoCapture(video_path)
-    fps = vidcap.get(cv2.CAP_PROP_FPS)
-    interval = int(fps * frame_rate)
-
-    frames = []
-    count = 0
-    success, image = vidcap.read()
-    while success:
-        if count % interval == 0:
-            frames.append(image)
-        success, image = vidcap.read()
-        count += 1
-
-    vidcap.release()
-    return frames
-
-
-def log_metrics(video_key, frame_count, processing_time, success=True):
-    """Log processing metrics."""
+# --- Metrics Logging ---
+def log_metrics(video_key: str, frames: int, elapsed: float, success: bool):
     metrics = {
-        'timestamp': time.time(),
-        'video_key': video_key,
-        'frames_processed': frame_count,
-        'processing_time_seconds': processing_time,
-        'success': success
+        "timestamp": time.time(),
+        "video_key": video_key,
+        "frames_processed": frames,
+        "processing_time_s": elapsed,
+        "success": success
     }
-    logger.info(f"Processing metrics: {json.dumps(metrics)}")
+    logger.info("Metrics: %s", json.dumps(metrics))
 
-
+# --- Lambda Handler ---
 def lambda_handler(event, context):
+    video_key = event.get("video_key")
+    if not video_key:
+        return {"statusCode": 400, "body": json.dumps({"error": "Missing video_key"})}
+
+    ext = os.path.splitext(video_key)[1].lower()
+    if ext not in SUPPORTED_FORMATS:
+        return {"statusCode": 400, "body": json.dumps({"error": "Unsupported format"})}
+
+    start = time.time()
+    frames_processed = 0
+
     try:
-        # Input validation
-        if 'video_key' not in event:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({'error': 'Missing video_key in event'})
-            }
-        
-        video_key = event['video_key']
-        if not video_key.lower().endswith(SUPPORTED_FORMATS):
-            return {
-                'statusCode': 400,
-                'body': json.dumps({'error': 'Unsupported video format'})
-            }
+        # 1) Pre-check size via HEAD
+        head = s3.head_object(Bucket=S3_BUCKET, Key=video_key)
+        size_mb = head["ContentLength"] / (1024**2)
+        if size_mb > MAX_VIDEO_SIZE_MB:
+            raise ValueError(f"Video too large: {size_mb:.1f}MB > {MAX_VIDEO_SIZE_MB}MB")
 
-        print(f"📥 Processing video: {video_key}")
+        # 2) Download
+        with tempfile.TemporaryDirectory() as tmp:
+            local_video = os.path.join(tmp, f"input{ext}")
+            download_from_s3(S3_BUCKET, video_key, local_video)
 
-        start_time = time.time()
+            # 3) Validate with OpenCV
+            cap = cv2.VideoCapture(local_video)
+            if not cap.isOpened():
+                raise RuntimeError("Cannot open video")
+            fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            logger.info("Video opened: fps=%s, frames=%s", fps, total_frames)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            local_path = os.path.join(tmpdir, "video.mp4")
-            s3.download_file(S3_BUCKET, video_key, local_path)
+            # 4) Stream & batch inference
+            interval = max(int(fps / FRAME_RATE), 1)
+            batch_tensors = []
+            batch_indices = []
+            results: List[Dict[str,int]] = []
+            idx = 0
 
-            # Validate video file
-            video_info = validate_video_file(local_path)
-            print(f"🎥 Video info: {video_info}")
+            success, frame = cap.read()
+            while success:
+                if idx % interval == 0:
+                    img = frame.copy()
+                    tensor = transform(img).unsqueeze(0)  # (1,3,128,128)
+                    batch_tensors.append(tensor)
+                    batch_indices.append(idx)
 
-            # Check video size
-            check_video_size(local_path)
+                    # run batch when full
+                    if len(batch_tensors) >= BATCH_SIZE:
+                        batch = torch.cat(batch_tensors, dim=0)
+                        with torch.no_grad():
+                            logits = model(batch)
+                            preds = logits.argmax(dim=1).cpu().numpy()
+                        for i, p in zip(batch_indices, preds):
+                            results.append({"frame": i, "prediction": int(p)})
+                        batch_tensors.clear()
+                        batch_indices.clear()
 
-            frames = extract_frames(local_path, FRAME_RATE)
-            print(f"🖼️ Extracted {len(frames)} frames")
+                idx += 1
+                success, frame = cap.read()
 
-            results = []
-            for i, frame in enumerate(frames):
-                input_tensor = transform(frame).unsqueeze(0)  # (1, 3, 128, 128)
+            # flush remaining batch
+            if batch_tensors:
+                batch = torch.cat(batch_tensors, dim=0)
                 with torch.no_grad():
-                    logits = model(input_tensor)
-                    prediction = torch.argmax(logits, dim=1).item()
-                results.append({
-                    "frame": i,
-                    "prediction": prediction
-                })
+                    logits = model(batch)
+                    preds = logits.argmax(dim=1).cpu().numpy()
+                for i, p in zip(batch_indices, preds):
+                    results.append({"frame": i, "prediction": int(p)})
 
-        # Upload results as JSON to S3
-        results_key = video_key.replace(".mp4", "_cnn_results.json")
-        result_data = json.dumps(results)
-        s3.put_object(
-            Bucket=S3_BUCKET,
-            Key=results_key,
-            Body=result_data,
-            ContentType="application/json"
-        )
+            cap.release()
+            frames_processed = len(results)
+            logger.info("Processed %d frames", frames_processed)
 
-        processing_time = time.time() - start_time
-        log_metrics(video_key, len(frames), processing_time, success=True)
+            # 5) Upload results
+            base = os.path.splitext(video_key)[0]
+            result_key = f"{base}_cnn_results.json"
+            body = json.dumps(results).encode("utf-8")
+            upload_to_s3(S3_BUCKET, result_key, body, "application/json")
+            logger.info("Results uploaded to %s", result_key)
 
-        print(f"✅ Uploaded results to: {results_key}")
-        return {
-            "statusCode": 200,
-            "body": f"Processed {len(results)} frames from {video_key}"
-        }
+        # 6) Log metrics & return
+        elapsed = time.time() - start
+        log_metrics(video_key, frames_processed, elapsed, success=True)
+        return {"statusCode": 200,
+                "body": f"Processed {frames_processed} frames from {video_key}"}
 
     except Exception as e:
-        print(f"❌ Error processing video: {str(e)}")
-        log_metrics(video_key, 0, 0, success=False)
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'error': str(e)})
-        }
-
-# This Lambda function processes a video file, extracts frames, runs a CNN model on each frame,
-# and uploads the results to S3 as a JSON file.
-# Ensure you have the necessary IAM permissions for S3 access and Lambda execution.
-# Make sure to package the model and dependencies correctly for Lambda deployment.
+        logger.error("Error processing %s: %s", video_key, e, exc_info=True)
+        elapsed = time.time() - start
+        log_metrics(video_key or "unknown", frames_processed, elapsed, success=False)
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
