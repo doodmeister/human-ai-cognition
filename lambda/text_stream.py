@@ -1,101 +1,146 @@
-import os
 import json
-import uuid
 import boto3
+import os
+import uuid
+import random
 from datetime import datetime
-from sentence_transformers import SentenceTransformer
-from opensearchpy import OpenSearch
+from opensearchpy import OpenSearch, RequestsHttpConnection
+from requests_aws4auth import AWS4Auth
+import numpy as np
 
-# --- Environment variables ---
-S3_BUCKET = os.environ.get("S3_BUCKET", "humanai-document-store")
-OPENSEARCH_HOST = os.environ.get("OPENSEARCH_HOST")
-STM_INDEX = os.environ.get("STM_INDEX", "humanai-stm")
-VECTOR_DIM = int(os.environ.get("VECTOR_DIM", "768"))
+# AWS/OpenSearch initialization
+region = os.environ['AWS_REGION']
+service = 'es'
+credentials = boto3.Session().get_credentials()
+awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
+host = os.environ['OPENSEARCH_HOST']
+stm_index = os.environ.get('STM_INDEX', 'humanai-stm')
+vector_dim = int(os.environ.get('VECTOR_DIM', 768))
+meta_index = os.environ.get('META_INDEX', 'humanai-meta')  # New meta index for dream_needed flag
 
-# --- Init clients ---
-s3 = boto3.client("s3")
-
-opensearch = OpenSearch(
-    hosts=[{"host": OPENSEARCH_HOST, "port": 443}],
+client = OpenSearch(
+    hosts=[{'host': host, 'port': 443}],
+    http_auth=awsauth,
     use_ssl=True,
-    verify_certs=True
+    verify_certs=True,
+    connection_class=RequestsHttpConnection
 )
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-
-# --- Ensure index exists ---
-def ensure_index(index_name):
-    if not opensearch.indices.exists(index_name):
-        opensearch.indices.create(
-            index=index_name,
-            body={
-                "settings": {
-                    "index": {
-                        "knn": True
-                    }
-                },
-                "mappings": {
-                    "properties": {
-                        "content": {"type": "text"},
-                        "embedding": {"type": "knn_vector", "dimension": VECTOR_DIM},
-                        "timestamp": {"type": "date"},
-                        "priority": {"type": "float"},
-                        "emotion": {"type": "float"},
-                        "tags": {"type": "keyword"},
-                        "important": {"type": "boolean"}
-                    }
-                }
-            }
-        )
-
-ensure_index(STM_INDEX)
-
-# --- Simulated meta-cognitive importance check ---
-def is_important(text: str):
-    return "remember" in text.lower() or "important" in text.lower()
-
-# --- Lambda Handler ---
 def lambda_handler(event, context):
-    # Input from S3 OR raw event
-    if "s3_key" in event:
-        s3_key = event["s3_key"]
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=s3_key)
-        raw_text = obj["Body"].read().decode("utf-8")
-    elif "text" in event:
-        raw_text = event["text"]
-    else:
-        return {"statusCode": 400, "body": "No text provided."}
+    text_input = event.get('text')
+    if not text_input:
+        return {'statusCode': 400, 'body': json.dumps('No text provided.')}
 
-    print(f"📝 Processing text: {raw_text[:80]}...")
+    now = datetime.utcnow()
+    memory_doc = process_text_to_memory(text_input, now)
 
-    # --- Embedding ---
-    embedding = model.encode(raw_text).tolist()
+    index_into_stm(memory_doc)
 
-    # --- Metadata ---
-    priority = 1.0
-    emotion = 0.2
-    tags = ["text"]
-    important = is_important(raw_text)
+    reheat_count = memory_reheat(memory_doc['embedding'])
+
+    if reheat_count >= 5:
+        trigger_dream_needed(now)
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps(f'Text processed and stored into STM. Reheated {reheat_count} memories.')
+    }
+
+def process_text_to_memory(text, now):
+    embedding = fake_text_embedding(text)
+    attention_score = 1.0
+
+    salience = compute_salience(text)
+    emotions = simulate_emotion_tags(text)
+    tags = extract_tags(text)
 
     doc = {
-        "content": raw_text,
+        "content": text,
         "embedding": embedding,
-        "timestamp": datetime.utcnow(),
-        "priority": priority,
-        "emotion": emotion,
-        "tags": tags,
-        "important": important
+        "timestamp": now.isoformat(),
+        "priority": salience,
+        "attention_score": attention_score,
+        "times_accessed": 0,
+        "important": determine_importance(text),
+        "emotion_joy": emotions['joy'],
+        "emotion_fear": emotions['fear'],
+        "emotion_surprise": emotions['surprise'],
+        "tags": tags
+    }
+    return doc
+
+def index_into_stm(doc):
+    client.index(index=stm_index, id=str(uuid.uuid4()), body=doc)
+
+def compute_salience(text):
+    base_salience = min(1.0, len(text) / 300)
+    keyword_bonus = 0.1 if any(keyword in text.lower() for keyword in ['important', 'urgent', 'goal']) else 0.0
+    random_bias = random.uniform(0.0, 0.05)
+    return min(1.0, base_salience + keyword_bonus + random_bias)
+
+def simulate_emotion_tags(text):
+    joy = 0.6 if 'happy' in text.lower() else random.uniform(0.0, 0.3)
+    fear = 0.6 if 'fear' in text.lower() or 'danger' in text.lower() else random.uniform(0.0, 0.3)
+    surprise = 0.6 if 'surprised' in text.lower() else random.uniform(0.0, 0.3)
+    return {'joy': joy, 'fear': fear, 'surprise': surprise}
+
+def determine_importance(text):
+    important_keywords = ['must', 'need', 'critical', 'urgent']
+    return any(word in text.lower() for word in important_keywords)
+
+def extract_tags(text):
+    basic_tags = []
+    if 'project' in text.lower():
+        basic_tags.append('project')
+    if 'meeting' in text.lower():
+        basic_tags.append('meeting')
+    if 'deadline' in text.lower():
+        basic_tags.append('deadline')
+    return basic_tags
+
+def fake_text_embedding(text):
+    return np.random.randn(vector_dim).tolist()
+
+def memory_reheat(new_embedding, similarity_threshold=0.7, boost_amount=0.2):
+    query = {
+        "size": 100,
+        "query": {
+            "script_score": {
+                "query": {"match_all": {}},
+                "script": {
+                    "source": "cosineSimilarity(params.query_vector, 'embedding') + 1.0",
+                    "params": {"query_vector": new_embedding}
+                }
+            }
+        }
     }
 
-    doc_id = str(uuid.uuid4())
-    opensearch.index(index=STM_INDEX, id=doc_id, body=doc)
+    response = client.search(index=stm_index, body=query)
+    hits = response['hits']['hits']
 
-    print(f"✅ Indexed document {doc_id} into {STM_INDEX}")
-    return {
-        "statusCode": 200,
-        "body": f"Indexed text ({'important' if important else 'normal'})"
+    reheated = 0
+    for hit in hits:
+        score = hit['_score'] - 1.0
+        if score >= similarity_threshold:
+            doc_id = hit['_id']
+            source = hit['_source']
+            new_attention = min(1.0, source.get('attention_score', 0.5) + boost_amount)
+            client.update(index=stm_index, id=doc_id, body={
+                "doc": {
+                    "attention_score": new_attention,
+                    "times_accessed": source.get('times_accessed', 0) + 1
+                }
+            })
+            reheated += 1
+
+    print(f"✅ Memory reheating: {reheated} memories boosted.")
+    return reheated
+
+def trigger_dream_needed(now):
+    meta_doc = {
+        "event": "dream_needed",
+        "timestamp": now.isoformat(),
+        "reason": "excessive_memory_reheat"
     }
-# This Lambda function processes text input, generates embeddings using a pre-trained model,
-# and indexes the data into an OpenSearch index with metadata for priority, emotion, tags, and importance.
-# It also checks for meta-cognitive importance based on keywords in the text.
-# The function can handle input from S3 or directly from the event payload.
+    client.index(index=meta_index, id=str(uuid.uuid4()), body=meta_doc)
+    print("🌙 Dream Needed flag triggered due to memory reheating surge.")

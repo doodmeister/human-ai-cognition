@@ -5,3 +5,5 @@ opensearch_domain  = "your-opensearch-domain.us-east-1.es.amazonaws.com"
 vector_dim         = 768
 lambda_memory_size = 512
 lambda_timeout     = 60
+meta_index        = "humanai-meta"
+dream_lambda_url  = "https://your-api-gateway-id.execute-api.us-east-1.amazonaws.com/prod/trigger-dream"

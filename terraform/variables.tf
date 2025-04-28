@@ -81,3 +81,15 @@ variable "log_retention_in_days" {
   type        = number
   default     = 14
 }
+# Meta-cognition index for Dream Trigger listening
+variable "meta_index" {
+  description = "Name of the OpenSearch index where meta-cognition events (like dream_needed) are stored."
+  type        = string
+  default     = "humanai-meta"
+}
+
+# URL to trigger the Dream State Processor Lambda (via API Gateway)
+variable "dream_lambda_url" {
+  description = "API Gateway URL to invoke the Dream State Processor Lambda."
+  type        = string
+}
