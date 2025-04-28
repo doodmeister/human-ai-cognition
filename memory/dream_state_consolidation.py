@@ -22,6 +22,7 @@ host = os.environ['OPENSEARCH_HOST']
 stm_index = os.environ.get('STM_INDEX', 'humanai-stm')
 ltm_index = os.environ.get('LTM_INDEX', 'humanai-ltm')
 vector_dim = int(os.environ.get('VECTOR_DIM', 768))
+s3_bucket = os.environ.get('S3_MODEL_BUCKET')  # S3 bucket for model uploads
 
 client = OpenSearch(
     hosts=[{'host': host, 'port': 443}],
@@ -32,6 +33,14 @@ client = OpenSearch(
 )
 
 meta_manager = MetaFeedbackManager()
+
+def upload_file_to_s3(local_path, bucket, key):
+    s3 = boto3.client('s3')
+    try:
+        s3.upload_file(local_path, bucket, key)
+        print(f"✅ Uploaded {local_path} to s3://{bucket}/{key}")
+    except Exception as e:
+        print(f"⚠️ S3 upload failed: {e}")
 
 def lambda_handler(event, context):
     stm_entries = fetch_all_stm_entries()
@@ -44,10 +53,8 @@ def lambda_handler(event, context):
 
     selected_entries, selected_replay_data = select_high_salience_memories(labels, salience_scores, stm_entries, replay_data)
 
-    # Retrain DPAD on selected STM memories
     retrain_dpad(selected_replay_data)
 
-    # Move important memories to LTM
     for entry in selected_entries:
         index_into_ltm(entry)
 
@@ -98,11 +105,9 @@ def compute_salience_and_replay_data(stm_entries, now):
         0.1 * np.log1p(times_accessed)
     )
 
-    # Prepare replay data (input sequence, behavior label)
     replay_data = []
     for entry in stm_entries:
         embedding = np.array(entry['_source']['embedding'])
-        # For now, dummy behavior = sum of embedding (adjust based on real behavior label)
         behavior = np.sum(embedding)
         replay_data.append((embedding, behavior))
 
@@ -135,9 +140,8 @@ def retrain_dpad(replay_data, device="cpu", epochs_behavior=5, epochs_residual=5
 
     print(f"Starting DPAD retraining on {len(replay_data)} replay memories...")
 
-    # Load the existing DPAD model or initialize a new one
     model = DPADRNN(
-        input_size=768,  # Match your embedding size
+        input_size=768,
         hidden_size=128,
         output_size=1,
         nonlinear_input=True,
@@ -147,6 +151,7 @@ def retrain_dpad(replay_data, device="cpu", epochs_behavior=5, epochs_residual=5
         use_layernorm=True,
         dropout=0.1,
     )
+
     try:
         model.load("/tmp/dpad_model.pth", device=device)
         print("Loaded existing DPAD model.")
@@ -178,6 +183,12 @@ def retrain_dpad(replay_data, device="cpu", epochs_behavior=5, epochs_residual=5
 
     model.save("/tmp/dpad_model.pth")
     print("✅ DPAD retraining complete and model saved.")
+
+    if s3_bucket:
+        s3_key = f"dpad_models/dpad_model_{datetime.utcnow().isoformat()}.pth"
+        upload_file_to_s3("/tmp/dpad_model.pth", s3_bucket, s3_key)
+    else:
+        print("⚠️ No S3 bucket configured; skipping model upload.")
 
 def index_into_ltm(entry):
     doc = {
