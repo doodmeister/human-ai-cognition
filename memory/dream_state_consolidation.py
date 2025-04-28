@@ -22,7 +22,7 @@ host = os.environ['OPENSEARCH_HOST']
 stm_index = os.environ.get('STM_INDEX', 'humanai-stm')
 ltm_index = os.environ.get('LTM_INDEX', 'humanai-ltm')
 vector_dim = int(os.environ.get('VECTOR_DIM', 768))
-s3_bucket = os.environ.get('S3_MODEL_BUCKET')  # S3 bucket for model uploads
+s3_bucket = os.environ.get('S3_MODEL_BUCKET')
 
 client = OpenSearch(
     hosts=[{'host': host, 'port': 443}],
@@ -53,7 +53,7 @@ def lambda_handler(event, context):
 
     selected_entries, selected_replay_data = select_high_salience_memories(labels, salience_scores, stm_entries, replay_data)
 
-    retrain_dpad(selected_replay_data)
+    losses_behavior, losses_residual = retrain_dpad(selected_replay_data, embeddings)
 
     for entry in selected_entries:
         index_into_ltm(entry)
@@ -133,10 +133,10 @@ def select_high_salience_memories(labels, salience, stm_entries, replay_data):
 
     return selected_entries, selected_replay
 
-def retrain_dpad(replay_data, device="cpu", epochs_behavior=5, epochs_residual=5):
+def retrain_dpad(replay_data, embeddings, device="cpu", epochs_behavior=5, epochs_residual=5):
     if not replay_data:
         print("No STM memories selected for retraining.")
-        return
+        return [], []
 
     print(f"Starting DPAD retraining on {len(replay_data)} replay memories...")
 
@@ -175,20 +175,40 @@ def retrain_dpad(replay_data, device="cpu", epochs_behavior=5, epochs_residual=5
         list(model.rnn_residual.parameters()) +
         list(model.reconstruction_head.parameters()), lr=1e-4)
 
-    behavior_criterion = torch.nn.MSELoss()
-    residual_criterion = torch.nn.MSELoss()
-
-    trainer.train_behavior_phase(data_loader, optimizer_behavior, behavior_criterion, epochs=epochs_behavior)
-    trainer.train_residual_phase(data_loader, optimizer_residual, residual_criterion, epochs=epochs_residual)
+    behavior_losses = trainer.train_behavior_phase(data_loader, optimizer_behavior, torch.nn.MSELoss(), epochs=epochs_behavior)
+    residual_losses = trainer.train_residual_phase(data_loader, optimizer_residual, torch.nn.MSELoss(), epochs=epochs_residual)
 
     model.save("/tmp/dpad_model.pth")
     print("✅ DPAD retraining complete and model saved.")
 
     if s3_bucket:
-        s3_key = f"dpad_models/dpad_model_{datetime.utcnow().isoformat()}.pth"
-        upload_file_to_s3("/tmp/dpad_model.pth", s3_bucket, s3_key)
+        timestamp = datetime.utcnow().isoformat()
+        s3_key_model = f"dpad_models/dpad_model_{timestamp}.pth"
+        upload_file_to_s3("/tmp/dpad_model.pth", s3_bucket, s3_key_model)
+
+        log_dream_retraining_metrics(behavior_losses, residual_losses, embeddings, timestamp)
     else:
         print("⚠️ No S3 bucket configured; skipping model upload.")
+
+    return behavior_losses, residual_losses
+
+def log_dream_retraining_metrics(losses_behavior, losses_residual, replay_embeddings, timestamp, output_dir="/tmp/dream_logs"):
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(f"{output_dir}/behavior_loss.json", "w") as f:
+        json.dump(losses_behavior, f)
+    with open(f"{output_dir}/residual_loss.json", "w") as f:
+        json.dump(losses_residual, f)
+
+    pca_proj = PCA(n_components=2).fit_transform(replay_embeddings)
+    replay_vis = [{"x": float(x), "y": float(y)} for x, y in pca_proj]
+    with open(f"{output_dir}/replay_embeddings_pca.json", "w") as f:
+        json.dump(replay_vis, f)
+
+    if s3_bucket:
+        upload_file_to_s3(f"{output_dir}/behavior_loss.json", s3_bucket, f"dpad_logs/behavior_loss_{timestamp}.json")
+        upload_file_to_s3(f"{output_dir}/residual_loss.json", s3_bucket, f"dpad_logs/residual_loss_{timestamp}.json")
+        upload_file_to_s3(f"{output_dir}/replay_embeddings_pca.json", s3_bucket, f"dpad_logs/replay_pca_{timestamp}.json")
 
 def index_into_ltm(entry):
     doc = {
