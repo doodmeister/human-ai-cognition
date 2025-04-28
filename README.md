@@ -12,6 +12,18 @@ The system leverages **Short-Term Memory (STM)**, **Long-Term Memory (LTM)**, **
 
 The agent retrieves memories, builds context-rich prompts, and responds with reasoning augmented by its evolving memory.
 
+flowchart TD
+  A(Sensory Input to STM) --> B(Attention/Salience Evaluation)
+  B --> C(STM Memory Collection)
+  C --> D{Fatigue or Timer?}
+  D -->|Yes| E(Enter Dream Phase)
+  E --> F(Cluster STM Memories)
+  F --> G(Select High Salience Memories)
+  G --> H(Retrain DPAD with Replay)
+  H --> I(Move Important Memories to LTM)
+  I --> J(Flush STM, Clear Noise)
+  J --> K(Return to Wake State)
+
 ---
 
 ## 📂 Project Structure
