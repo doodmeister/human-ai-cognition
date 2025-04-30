@@ -7,7 +7,7 @@ Handles building prompts that combine user inputs with retrieved memories
 (short-term, long-term, and prospective) to create context-rich inputs for the LLM.
 """
 
-from typing import List, Union, Dict
+from typing import List, Union, Dict, Optional, Any
 
 def embed_text(text: str, embedder) -> list:
     """
@@ -46,37 +46,32 @@ def format_section(title: str, docs: List[Union[str, Dict[str, str]]]) -> str:
     section_text = f"### {title}\n" + "\n".join(lines) + "\n"
     return section_text
 
-def build_prompt(user_input: str,
-                 stm_hits: List[Union[str, Dict[str, str]]],
-                 ltm_hits: List[Union[str, Dict[str, str]]],
-                 reminders: List[Union[str, Dict[str, str]]]) -> str:
+def build_prompt(user_input: str, 
+                stm_hits: list, 
+                ltm_hits: list, 
+                reminders: list,
+                procedure: Optional[List[Any]] = None) -> str:
     """
-    Build the complete prompt to send to the LLM.
-
-    Args:
-        user_input (str): The user's raw input query.
-        stm_hits (list): Retrieved Short-Term Memory results.
-        ltm_hits (list): Retrieved Long-Term Memory results.
-        reminders (list): Retrieved Prospective Memory results.
-
-    Returns:
-        str: Complete prompt ready for LLM input.
+    Build prompt incorporating all memory sources.
     """
     prompt_parts = []
-
-    # System behavior instruction
-    prompt_parts.append("You are a helpful AI assistant with a structured memory system.")
-    prompt_parts.append("You can recall memories, reminders, and past conversations to assist the user.\n")
-
-    # Add memory sections
-    prompt_parts.append(format_section("Short Term Memory", stm_hits))
-    prompt_parts.append(format_section("Long Term Memory", ltm_hits))
-    prompt_parts.append(format_section("Reminders", reminders))
-
-    # Current user input
-    prompt_parts.append(f"### Current Conversation\nUser: {user_input}\nAssistant:")
-
-    # Combine everything cleanly
-    full_prompt = "\n".join(part for part in prompt_parts if part)
-
-    return full_prompt
+    
+    # Add relevant memories
+    if stm_hits:
+        prompt_parts.append("Recent context:")
+        prompt_parts.extend(stm_hits)
+        
+    if ltm_hits:
+        prompt_parts.append("Related memories:")
+        prompt_parts.extend(ltm_hits)
+        
+    if reminders:
+        prompt_parts.append("Active reminders:")
+        prompt_parts.extend(reminders)
+        
+    if procedure:
+        prompt_parts.append("Relevant procedure steps:")
+        prompt_parts.extend([f"- {step}" for step in procedure])
+    
+    prompt_parts.append(f"User: {user_input}")
+    return "\n".join(prompt_parts)

@@ -12,6 +12,7 @@ import torch
 
 from metacognition.meta_feedback import MetaFeedbackManager
 from model.dpad_transformer import DPADRNN, DPADTrainer
+from memory.procedural_memory import ProceduralMemory
 
 # AWS/OpenSearch initialization
 region = os.environ['AWS_REGION']
@@ -33,6 +34,7 @@ client = OpenSearch(
 )
 
 meta_manager = MetaFeedbackManager()
+procedural_memory = ProceduralMemory()
 
 def upload_file_to_s3(local_path, bucket, key):
     s3 = boto3.client('s3')
@@ -70,9 +72,11 @@ def lambda_handler(event, context):
 
     log_visualization_data(embeddings, labels)
 
+    export_procedural_memories()
+
     return {
         'statusCode': 200,
-        'body': json.dumps(f'{len(selected_entries)} entries consolidated into LTM and retrained into DPAD.')
+        'body': json.dumps(f'{len(selected_entries)} entries consolidated into LTM and retrained into DPAD. Procedural memories exported.')
     }
 
 def fetch_all_stm_entries():
@@ -110,6 +114,26 @@ def compute_salience_and_replay_data(stm_entries, now):
         embedding = np.array(entry['_source']['embedding'])
         behavior = np.sum(embedding)
         replay_data.append((embedding, behavior))
+
+    # Add procedural memory handling
+    procedural_entries = []
+    for entry in stm_entries:
+        if entry['_source'].get('memory_type') == 'procedural':
+            steps = entry['_source'].get('steps', [])
+            name = entry['_source'].get('name')
+            if steps and name:
+                try:
+                    procedural_memory.add_procedure(name, steps)
+                    procedural_entries.append(entry)
+                except Exception as e:
+                    print(f"Failed to add procedural memory: {e}")
+
+    # Update salience calculation for procedural memories
+    for entry in procedural_entries:
+        idx = stm_entries.index(entry)
+        # Increase salience for procedural memories that have been successfully executed
+        if entry['_source'].get('execution_success', False):
+            salience[idx] *= 1.2
 
     return embeddings, salience, replay_data
 
@@ -224,8 +248,18 @@ def index_into_ltm(entry):
         "tags": entry.get('tags', []),
         "important": entry.get('important', False),
         "times_accessed": entry.get('times_accessed', 0),
-        "memory_type": "episodic" if 'contextual_tags' in entry else "semantic"
+        "memory_type": entry.get('memory_type', 'semantic')
     }
+    
+    # Add procedural-specific fields
+    if entry.get('memory_type') == 'procedural':
+        doc.update({
+            "steps": entry.get('steps', []),
+            "name": entry.get('name'),
+            "execution_success": entry.get('execution_success', False),
+            "execution_count": entry.get('execution_count', 0)
+        })
+    
     client.index(index=ltm_index, id=str(uuid.uuid4()), body=doc)
 
 def log_visualization_data(embeddings, labels):
@@ -236,3 +270,21 @@ def log_visualization_data(embeddings, labels):
     ]
     with open("/tmp/cluster_vis_log.json", "w") as f:
         json.dump(vis_data, f)
+
+def export_procedural_memories():
+    """Export consolidated procedural memories to a JSON file."""
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    local_path = f"/tmp/procedural_memories_{timestamp}.json"
+    
+    try:
+        success = procedural_memory.export_procedures(local_path)
+        if success:
+            if s3_bucket:
+                s3_key = f"procedural_memories/backup_{timestamp}.json"
+                upload_file_to_s3(local_path, s3_bucket, s3_key)
+                print(f"✅ Exported procedural memories to S3")
+            return True
+        return False
+    except Exception as e:
+        print(f"Failed to export procedural memories: {e}")
+        return False

@@ -3,7 +3,8 @@ import time
 import logging
 import threading
 from datetime import datetime
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
+from memory.procedural_memory import ProceduralMemory, ProcedureValidationError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ class MetaCognition:
             "last_updated": datetime.utcnow().isoformat()
         }
 
+        # Add procedural memory integration
+        self.procedural_memory = ProceduralMemory(max_procedures=1000, cache_size=100)
+        
         # Prospective memory management
         self.prospective_memory = []
         self._lock = threading.Lock()
@@ -111,6 +115,14 @@ class MetaCognition:
                 return True
         if "remember this" in input_text.lower():
             return True
+        
+        # Add procedural memory consideration
+        if context_analysis and context_analysis.get("memory_type") == "procedural":
+            if context_analysis.get("execution_success", False):
+                return True
+            if context_analysis.get("execution_count", 0) > 3:
+                return True
+
         return False
 
     def add_prospective_memory(self, trigger_time: float, action_description: str) -> None:
@@ -130,3 +142,51 @@ class MetaCognition:
                 else:
                     remaining_memory.append((trigger_time, action))
             self.prospective_memory = remaining_memory
+
+    def learn_procedure(self, name: str, steps: List[Any]) -> bool:
+        """
+        Learn a new procedural memory with metacognitive monitoring.
+
+        Args:
+            name: Identifier for the procedure
+            steps: Sequence of actions/steps
+
+        Returns:
+            bool: True if successfully learned, False otherwise
+        """
+        try:
+            # Update attention based on learning new procedure
+            self.update_fatigue(
+                activity_level=0.7,
+                novelty=1.0,
+                task_difficulty=0.8
+            )
+            
+            self.procedural_memory.add_procedure(name, steps)
+            logger.info(f"[MetaCognition] Learned new procedure: {name}")
+            return True
+        except Exception as e:
+            logger.error(f"[MetaCognition] Failed to learn procedure: {str(e)}")
+            return False
+
+    def recall_procedure(self, context: str) -> Optional[List[Any]]:
+        """
+        Recall a procedure with metacognitive monitoring.
+
+        Args:
+            context: Context to match against procedure names
+
+        Returns:
+            Optional[List[Any]]: Retrieved procedure steps or None
+        """
+        # Update attention for recall attempt
+        self.update_fatigue(
+            activity_level=0.3,
+            novelty=0.2,
+            task_difficulty=0.4
+        )
+        
+        steps = self.procedural_memory.find_matching_procedure(context)
+        if steps:
+            logger.info(f"[MetaCognition] Successfully recalled procedure for context: {context}")
+        return steps

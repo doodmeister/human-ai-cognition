@@ -1,6 +1,8 @@
 from datetime import datetime
 import logging
-from .state import meta_state
+from typing import Dict, Any, Optional
+import boto3
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,61 +19,98 @@ class MetaFeedbackManager:
     Manages meta-cognitive feedback, including logging dream consolidation events
     and adjusting cognitive states like fatigue and attention.
     """
-    def __init__(self, state=None):
+    def __init__(self):
         """
         Initialize the MetaFeedbackManager.
+        """
+        self.cloudwatch = boto3.client('cloudwatch')
+        self.namespace = "HumanAI/Metacognition"
 
+    def send_feedback(self, event: str, count: int = 1, avg_salience: float = 0.0, 
+                     metrics: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Send metacognitive feedback metrics to CloudWatch.
+        
         Args:
-            state (dict, optional): The meta-cognitive state to manage. Defaults to `meta_state`.
+            event: Event type identifier
+            count: Number of items processed
+            avg_salience: Average salience score
+            metrics: Additional custom metrics
         """
-        self.state = state or meta_state
-
-    def send_feedback(self, event, count, avg_salience=None, timestamp=None):
-        """
-        Log feedback for a meta-cognitive event and adjust cognitive states.
-
-        Args:
-            event (str): The name of the event (e.g., 'dream_consolidation').
-            count (int): The number of entries consolidated.
-            avg_salience (float, optional): The average salience of the entries. Defaults to 0.0.
-            timestamp (str, optional): The timestamp of the event. Defaults to the current UTC time.
-        """
-        try:
-            # Validate inputs
-            if not isinstance(event, str) or not event:
-                raise ValueError("Event must be a non-empty string.")
-            if not isinstance(count, int) or count < 0:
-                raise ValueError("Count must be a non-negative integer.")
-            if avg_salience is not None and (not isinstance(avg_salience, (int, float)) or not (0.0 <= avg_salience <= 1.0)):
-                raise ValueError("Avg_salience must be a float between 0.0 and 1.0.")
-
-            timestamp = timestamp or datetime.utcnow().isoformat()
-            avg_salience = round(avg_salience or 0.0, 4)
-
-            # Log the event
-            log_entry = {
-                "event": event,
-                "timestamp": timestamp,
-                "entries_consolidated": count,
-                "avg_salience": avg_salience
+        timestamp = datetime.utcnow()
+        metric_data = [
+            {
+                'MetricName': f'{event}_count',
+                'Value': count,
+                'Unit': 'Count',
+                'Timestamp': timestamp
+            },
+            {
+                'MetricName': f'{event}_salience',
+                'Value': avg_salience,
+                'Unit': 'None',
+                'Timestamp': timestamp
             }
-            self.state["dream_log"].append(log_entry)
-            self.state["dream_count"] += 1
+        ]
 
-            # Adjust meta states
-            self.state["fatigue_level"] = max(0.0, self.state["fatigue_level"] - FATIGUE_DECREMENT)
-            self.state["attention_level"] = min(1.0, self.state["attention_level"] + ATTENTION_INCREMENT)
+        # Add procedural memory specific metrics
+        if metrics and metrics.get('memory_type') == 'procedural':
+            proc_metrics = [
+                {
+                    'MetricName': 'procedure_execution_success',
+                    'Value': 1 if metrics.get('execution_success', False) else 0,
+                    'Unit': 'Count',
+                    'Timestamp': timestamp
+                },
+                {
+                    'MetricName': 'procedure_execution_count',
+                    'Value': metrics.get('execution_count', 0),
+                    'Unit': 'Count',
+                    'Timestamp': timestamp
+                },
+                {
+                    'MetricName': 'procedure_learning_rate',
+                    'Value': metrics.get('learning_rate', 0.0),
+                    'Unit': 'None',
+                    'Timestamp': timestamp
+                }
+            ]
+            metric_data.extend(proc_metrics)
 
-            # Simulated introspection logic
-            if avg_salience < LOW_SALIENCE_THRESHOLD:
-                logger.info("[Meta-Cognition] Low-value dream detected. Suggesting STM reheating.")
-            elif avg_salience > HIGH_SALIENCE_THRESHOLD:
-                logger.info("[Meta-Cognition] High-value dream — reinforce related memory pathways.")
-
-            logger.info(
-                f"[Meta-Cognition] Dream #{self.state['dream_count']} → {count} entries, "
-                f"salience={avg_salience}, fatigue={self.state['fatigue_level']}, "
-                f"attention={self.state['attention_level']}"
+        try:
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=metric_data
             )
         except Exception as e:
-            logger.error(f"Error in send_feedback: {e}", exc_info=True)
+            print(f"Failed to send metrics: {str(e)}")
+
+    def log_procedure_metrics(self, name: str, success: bool, execution_time: float) -> None:
+        """
+        Log specific metrics for procedural memory operations.
+        """
+        try:
+            timestamp = datetime.utcnow()
+            metric_data = [
+                {
+                    'MetricName': 'procedure_execution',
+                    'Value': 1 if success else 0,
+                    'Unit': 'Count',
+                    'Timestamp': timestamp,
+                    'Dimensions': [{'Name': 'ProcedureName', 'Value': name}]
+                },
+                {
+                    'MetricName': 'procedure_execution_time',
+                    'Value': execution_time,
+                    'Unit': 'Seconds',
+                    'Timestamp': timestamp,
+                    'Dimensions': [{'Name': 'ProcedureName', 'Value': name}]
+                }
+            ]
+
+            self.cloudwatch.put_metric_data(
+                Namespace=self.namespace,
+                MetricData=metric_data
+            )
+        except Exception as e:
+            logger.error(f"Failed to log procedure metrics: {str(e)}")
